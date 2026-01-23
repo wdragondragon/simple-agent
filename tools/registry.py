@@ -6,7 +6,6 @@ from tools.filesystem import (
     tail_file
 )
 from tools.command import run_command
-from tools.web_reader import read_webpage
 
 
 def finish(answer: str):
@@ -20,6 +19,5 @@ TOOLS = {
     "list_folder": list_folder,
     "tail_file": tail_file,
     "run_command": run_command,
-    "read_webpage": read_webpage,
     "finish": finish,
 }
