@@ -11,6 +11,9 @@ class Memory:
             "content": content
         })
 
+    def add_message(self, message: dict):
+        self.messages.append(message)
+
     def dump(self):
         return list(self.messages)
 

@@ -1,13 +1,16 @@
+import json
 import time
 from datetime import timedelta
 
 from core.parser import parse_action
 from core.prompt import SYSTEM_PROMPT
 from core.state import State
+from llm.client import call_llm_with_tools
 from tools.ConceptMemory import ConceptMemory
 from tools.Memory import Memory
 from tools.compressor import compress_memory
 from tools.registry import TOOLS
+from tools.schemas import TOOL_SCHEMAS
 
 
 class Agent:
@@ -22,6 +25,7 @@ class Agent:
 
         step = 0
         last_action = None
+        self.last_tool_calls = []
         result_msg = None
         start_time = time.perf_counter()
         while True:
@@ -38,41 +42,77 @@ class Agent:
                 messages += self.concept_memory.dump()
                 messages += self.memory.dump()
                 print("询问：" + str(messages))
-                resp = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0
-                )
-                content = resp.choices[0].message.content
-                print("回答：" + content)
+                assistant_msg = call_llm_with_tools(self.client, self.model, messages, tools=TOOL_SCHEMAS)
+                print("回答：" + str(assistant_msg))
 
-                try:
-                    action_name, action_input = parse_action(content)
-                except Exception as e:
-                    self.memory.add("user", f"ERROR: {e}，请重新严格按格式输出")
-                    continue
+                # 将assistant的消息添加到内存（可能是content或tool_calls）
+                msg_dict = {"role": "assistant"}
+                if assistant_msg.content is not None:
+                    msg_dict["content"] = assistant_msg.content
+                if assistant_msg.tool_calls is not None:
+                    # 将tool_calls转换为字典列表
+                    try:
+                        # 尝试使用 model_dump() (Pydantic v2) 或 dict() (Pydantic v1)
+                        if hasattr(assistant_msg.tool_calls[0], 'model_dump'):
+                            msg_dict["tool_calls"] = [tc.model_dump() for tc in assistant_msg.tool_calls]
+                        else:
+                            msg_dict["tool_calls"] = [tc.dict() for tc in assistant_msg.tool_calls]
+                    except (AttributeError, IndexError):
+                        # 如果转换失败，保持原样
+                        msg_dict["tool_calls"] = assistant_msg.tool_calls
+                self.memory.add_message(msg_dict)
 
-                last_action = (action_name, action_input)
-                self.memory.add("assistant", content)
-                state = State.ACT
+                if assistant_msg.tool_calls:
+                    # 有tool calls，进入ACT状态执行
+                    self.last_tool_calls = assistant_msg.tool_calls
+                    state = State.ACT
+                else:
+                    # 没有tool calls，检查是否有content作为最终答案
+                    if assistant_msg.content:
+                        # 将content作为最终答案（假设模型直接输出答案）
+                        result_msg = assistant_msg.content
+                        state = State.FINISH
+                    else:
+                        # 既无tool calls也无content，错误
+                        self.memory.add("user", "ERROR: LLM returned empty response")
+                        continue
 
             # ===== ACT =====
             elif state == State.ACT:
-                tool, params = last_action
+                # 执行每个tool call
+                for tool_call in self.last_tool_calls:
+                    func_name = tool_call.function.name
+                    try:
+                        func_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError as e:
+                        observation = f"ERROR: 参数解析失败: {e}"
+                        self.memory.add_message({
+                            "role": "tool",
+                            "content": observation,
+                            "tool_call_id": tool_call.id
+                        })
+                        continue
 
-                if tool not in TOOLS:
-                    observation = f"ERROR: 未知工具 {tool}"
-                else:
-                    print(f"正在调用工具[{tool}]，入参:{params}")
-                    observation = TOOLS[tool](**params)
+                    if func_name not in TOOLS:
+                        observation = f"ERROR: 未知工具 {func_name}"
+                    else:
+                        print(f"正在调用工具[{func_name}]，入参:{func_args}")
+                        observation = TOOLS[func_name](**func_args)
 
-                print("我计算的Observation:", observation)
-                self.memory.add("user", f"Observation: {observation}")
+                    print("我计算的Observation:", observation)
+                    # 添加tool消息
+                    self.memory.add_message({
+                        "role": "tool",
+                        "content": str(observation),
+                        "tool_call_id": tool_call.id
+                    })
 
-                if tool == "finish":
-                    result_msg = observation
-                    state = State.FINISH
-                else:
+                    if func_name == "finish":
+                        result_msg = observation
+                        state = State.FINISH
+                        break  # 不再执行后续tool calls
+                
+                if state != State.FINISH:
                     state = State.OBSERVE
 
             # ===== OBSERVE =====
@@ -85,8 +125,6 @@ class Agent:
                 print("\n🎉 Agent 正常结束")
                 break
 
-        else:
-            print("⚠️ 达到最大步数，强制终止")
         return {"step": step, "cost_time": str(timedelta(seconds=time.perf_counter() - start_time)),
                 "result": result_msg}
 
