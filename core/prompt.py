@@ -30,6 +30,6 @@ JSON
 - write_file_safe(path: str, mode: char, content: str) 写入文件，请尽量使用绝对路径
 - list_folder(path: str) 获取该路径的所有文件，并且输出他的全路径 和 他属于文件或文件夹
 - tail_file(file_path: str, n: int) tail文件
-- run_command(cmd: str) 执行系统命令
+# - run_command(cmd: str) 执行系统命令
 - finish(answer: str) 结束时调用该工具输出信息
 """

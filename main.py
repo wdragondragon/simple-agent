@@ -7,6 +7,6 @@ if __name__ == "__main__":
     agent = Agent(client, OPENAI_MODEL)
 
     result = agent.run(
-        "请在我当前目录，编写一个python工具，要实现读取一个网页的功能。"
+        "请在我的电脑上，找到data-unify-query-platform应用最后一天的日志，并把最后一行打印给我"
     )
     print(result)
